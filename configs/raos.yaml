@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------------------
+# raos.yaml — RAOS-specific configuration.
+# Inherits every key from default.yaml; only overrides / adds what is needed.
+# ---------------------------------------------------------------------------
+
+_base_: "default.yaml"
+
+dataset:
+  # Forward slashes are used deliberately: backslashes are escape characters in
+  # YAML. All file access goes through pathlib.Path, so moving this to a Linux
+  # server later only requires changing this one line.
+  root: "C:/Users/ahmet.yaylalioglu/Desktop/phd_studies_anatomy/datasets/RAOS"
+
+  # Where slice masks come from: "nifti" reads the raw volumes on demand (the
+  # default, correct-by-construction path); "precomputed" serves already-extracted
+  # 128x128 patches from cache.patches_dir (written by scripts/precompute_patches.py)
+  # — identical masks, but training becomes compute-bound instead of IO-bound.
+  data_source: "nifti"
+
+  # RAOS ships as three nnU-Net-style subsets. Training uses only the clean
+  # anatomy (Set1). Set2/Set3 (post-surgery, missing organs) are the actual
+  # *evaluation* ground for a quality model — indexed but held out from training.
+  train_subsets: ["CancerImages(Set1)"]
+  heldout_subsets: ["AfterSurgery(Set2)", "MissingOrgans(Set3)"]
+
+  # Within each subset, labels live in these nnU-Net-style folders. Populated
+  # here from inspection; inspect_raos.py confirms them.
+  label_dirs: ["labelsTr", "labelsVal", "labelsTs"]
+  image_dirs: ["imagesTr", "imagesVal", "imagesTs"]  # unused this phase; kept for later
+
+  # Not needed this phase (we only touch label masks). Kept so the field exists.
+  images_subdir: null
+  labels_subdir: null
+
+  file_pattern: "*.nii.gz"
+
+organs:
+  # Integer label id -> organ name. Ids verified against inspect_raos.py
+  # (outputs/raos_inspection.json); names supplied from RAOS documentation.
+  liver: 1
+  spleen: 2
+  kidney_left: 3
+  kidney_right: 4
+  stomach: 5
+  gallbladder: 6
+  esophagus: 7
+  pancreas: 8
+  duodenum: 9
+  colon: 10
+  intestine: 11
+  adrenal_left: 12
+  adrenal_right: 13
+  rectum: 14
+  bladder: 15
+  femur_head_left: 16
+  femur_head_right: 17
+  prostate: 18
+  seminal_vesicles: 19
+
+# First experiment: a single organ (liver — largest, present in all 413 patients).
+target: "liver"
+
+# Per-organ min-area overrides for slice filtering (small organs need a lower
+# threshold or nearly every slice is dropped). Merged over slicing.min_organ_area.
+# Irrelevant for target: liver (huge), but small organs (<5k median voxels) like
+# the adrenals (12, 13) and esophagus (7) will want a lower threshold later.
+slicing:
+  min_organ_area_overrides:
+    adrenal_left: 10
+    adrenal_right: 10
+    esophagus: 15

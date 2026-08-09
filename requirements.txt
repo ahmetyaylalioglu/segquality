@@ -1,0 +1,20 @@
+# Core scientific stack
+numpy>=1.24
+scipy>=1.10
+
+# Medical imaging I/O and transforms
+nibabel>=5.1
+monai>=1.3
+
+# Deep learning (dataset returns torch tensors; no training in this phase)
+torch>=2.0
+
+# Config and utilities
+PyYAML>=6.0
+tqdm>=4.65
+
+# Visualization
+matplotlib>=3.7
+
+# Testing
+pytest>=7.4

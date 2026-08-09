@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# vae3d.yaml — 3D shape-VAE model + training configuration (Phase 7).
+# The volumetric sibling of vae.yaml. Inherits dataset/slicing/split/organs from
+# raos.yaml (and default.yaml under it); adds only the 3D model, loss, training
+# and data blocks. Like vae.yaml, the degradation block is inherited but UNUSED
+# here — the VAE trains on clean GT volumes only.
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+# 3D data source + precomputed-volume location. Unlike the 2D pipeline (which
+# keys off dataset.data_source), the 3D dataset keys off this separate `data`
+# block so the two never collide.
+data:
+  # "nifti" reads raw label volumes on demand (correct-by-construction, slow);
+  # "precomputed" serves already-extracted volumes from volumes_dir (written by
+  # scripts/precompute_volumes.py) — byte-identical, ~free random access.
+  data_source: "nifti"
+  volumes_dir: "outputs/volumes"
+
+vae3d:
+  latent_dim: 64
+  base_channels: 16
+  # Smoke/default size: 32^3 (divisible by 2^4 -> 2^3 bottleneck). For the full
+  # Colab run raise this ONE line to [64, 64, 64] (single source of truth: the
+  # dataset resize target is read from here, so model and data can never disagree).
+  input_size: [32, 32, 32]
+  # 3D-specific bbox margin (2D uses slicing.bbox_margin: 0.25, untouched). Smaller
+  # here because the whole organ is already captured; a small non-zero pad keeps a
+  # dilate degradation from spilling past the volume edge and avoids clipping edge
+  # voxels on resize. Raises post-squash occupancy from ~13% (0.25) to ~19% (0.10).
+  bbox_margin: 0.10
+
+loss:
+  dice_weight: 1.0
+  beta: 0.1                 # KL weight (beta-VAE). Low to avoid posterior collapse.
+  beta_warmup_epochs: 5     # linearly ramp beta 0 -> target over this many epochs; 0 disables
+
+train:
+  # 3D volumes are ~D times heavier than 2D slices, so batches are small and
+  # there are only 222 training volumes (vs ~16.5k slices) — the core 3D scarcity.
+  batch_size: 8
+  num_workers: 2
+  lr: 0.0002
+  epochs: 100
+  seed: 42
+  early_stop_patience: 15   # stop if val recon Dice hasn't improved for this many epochs (0 disables)
+  min_delta: 0.001          # improvements smaller than this don't reset the patience counter
+  recon_preview_every: 5    # save a val [input|recon|diff] orthogonal-slice preview every N epochs
+  device: "auto"            # auto | cuda | cpu
+  # Per-DataLoader volume LRU cache. With "nifti" every volume access re-reads the
+  # patient's NIfTI; one sample = one whole volume, so a cache >= the split size
+  # makes epochs 2+ pure compute. With "precomputed" this is irrelevant.
+  cache_size: 8

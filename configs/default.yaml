@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# default.yaml — common / dataset-agnostic settings.
+# Dataset-specific configs (e.g. raos.yaml) inherit from this file via the
+# top-level `_base_` key and override only what they need.
+# ---------------------------------------------------------------------------
+
+# Global reproducibility seed (used wherever an RNG is created).
+seed: 42
+
+# Root directory for all generated artifacts (indexes, plots, stats, splits).
+# Relative paths in the configs below are resolved against the project root.
+output_dir: "outputs"
+
+logging:
+  level: "INFO"                  # DEBUG | INFO | WARNING | ERROR
+
+# 2D slice extraction settings. Kept generic here; the slicing `axis` is a
+# parameter (never hard-coded) so the move to 3D volumes later is painless.
+slicing:
+  axis: 2                        # axial slice axis (0=sagittal, 1=coronal, 2=axial)
+  min_organ_area: 50             # slices with fewer organ voxels than this are dropped
+  min_organ_area_overrides: {}   # per-organ overrides, e.g. {esophagus: 15}
+  crop_mode: "bbox_centered"     # bbox_centered | full_slice
+  bbox_margin: 0.25              # expand bbox by this fraction of its side length
+  output_size: [128, 128]        # [H, W] after resize
+  keep_scale_metadata: true      # store pre-crop bbox and original shape per sample
+
+# Patient-based train/val/test split. Slice-based splitting is NEVER allowed
+# (would leak the same patient across splits).
+split:
+  train: 0.7
+  val: 0.15
+  test: 0.15
+  seed: 42
+  by: "patient"
+
+cache:
+  # `{organ}` is substituted with the target organ name at runtime.
+  index_path: "outputs/index_{organ}.json"
+  splits_path: "outputs/splits.json"
+  patches_dir: "outputs/patches"   # precomputed per-split patch archives ({split}.npz)
+
+# Mask degradation (evaluation side). Degradations are applied AFTER resize to
+# `slicing.output_size`, and true Dice is measured on that same resized pair, so
+# the VAE input and the Dice measurement live in the same space (no resize noise
+# leaks into the quality score). See README "Design notes".
+degradation:
+  space: "resized"                 # resized | native  (this phase: resized)
+  target_dice_range: [0.4, 0.99]   # inverse sampling: draw a target Dice, then solve for severity
+  dice_tolerance: 0.03             # acceptable |achieved - target|; outside it we return the achieved Dice
+  search_iters: 8                  # binary-search steps to hit the target Dice
+  min_valid_dice: 0.35             # below this (or empty/full) an output is degenerate -> retry/fallback
+  max_retries: 5                   # severity back-off attempts before falling back to a gentler type
+  max_chain_steps: 3               # compose up to this many degradations to reach low Dice targets
+  # Frozen evaluation set: a fixed list of (patient, slice, degradation_type,
+  # severity, seed, true_dice) so model comparisons use identical degraded masks.
+  eval_set_path: "outputs/eval_degradations.json"

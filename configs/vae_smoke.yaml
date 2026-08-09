@@ -1,0 +1,15 @@
+# ---------------------------------------------------------------------------
+# vae_smoke.yaml — fast smoke-test override of vae.yaml.
+# Fewer epochs and a cache big enough to hold the ~11 patient volumes in the
+# --limit 500 subset, with num_workers=0 so that single-process cache persists
+# across epochs (epoch 1 reads volumes, epochs 2+ are pure GPU compute).
+# NOT for the real run — use vae.yaml for that.
+# ---------------------------------------------------------------------------
+
+_base_: "vae.yaml"
+
+train:
+  epochs: 10
+  num_workers: 0
+  cache_size: 16
+  recon_preview_every: 3    # previews at epochs 3, 6, 9

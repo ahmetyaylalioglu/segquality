@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# vae.yaml — shape-VAE model + training configuration.
+# Inherits dataset/slicing/split/organs from raos.yaml (and default.yaml under
+# it); adds only the model, loss and training blocks. The degradation block is
+# inherited but UNUSED in this phase: the VAE trains on clean GT masks only.
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+# Training reads the precomputed patch archives (scripts/precompute_patches.py),
+# not the raw NIfTI volumes — ~16000x faster random access, byte-identical masks.
+dataset:
+  data_source: "precomputed"
+
+vae:
+  latent_dim: 32
+  base_channels: 32
+  input_size: [128, 128]
+
+loss:
+  dice_weight: 1.0
+  beta: 0.1                 # KL weight (beta-VAE). Low to avoid posterior collapse.
+  beta_warmup_epochs: 5     # linearly ramp beta 0 -> target over this many epochs; 0 disables
+
+train:
+  batch_size: 64
+  num_workers: 4
+  lr: 0.0002
+  epochs: 50
+  seed: 42
+  early_stop_patience: 10   # stop if val recon Dice hasn't improved for this many epochs (0 disables)
+  min_delta: 0.001          # improvements smaller than this don't reset the patience counter
+  recon_preview_every: 5    # save a val [input|recon|diff] preview every N epochs
+  device: "auto"            # auto | cuda | cpu
+  # Per-DataLoader volume LRU cache. Random shuffling re-reads full NIfTI volumes
+  # each epoch; raise this toward the number of distinct patients in the working
+  # set to make epochs 2+ compute-bound (costs ~one decompressed volume per slot).
+  cache_size: 4
