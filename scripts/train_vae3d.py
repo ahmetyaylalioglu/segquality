@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -191,6 +192,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="configs/vae3d.yaml", help="path to config YAML")
     parser.add_argument("--resume", default=None, help="checkpoint to resume from")
     parser.add_argument("--limit", type=int, default=None, help="cap volumes per split (smoke test)")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="override train.epochs (e.g. a fast --limit smoke)")
     parser.add_argument("--latent-dim", type=int, default=None, help="override vae3d.latent_dim")
     return parser.parse_args()
 
@@ -205,6 +208,8 @@ def main() -> None:
 
     if args.latent_dim is not None:
         config["vae3d"]["latent_dim"] = int(args.latent_dim)
+    if args.epochs is not None:
+        config["train"]["epochs"] = int(args.epochs)
 
     tcfg = config["train"]
     lcfg = config["loss"]
@@ -242,11 +247,13 @@ def main() -> None:
     patience = int(tcfg.get("early_stop_patience", 0))
     min_delta = float(tcfg.get("min_delta", 0.0))
     epochs_since_improve = 0
+    best_epoch = start_epoch  # epoch index of the current best (for the log line)
     history: dict[str, list[dict[str, float]]] = {"train": [], "val": []}
     logger.info("run tag=vae3d_%s | epochs=%d early_stop_patience=%d min_delta=%.4g",
                 tag, epochs, patience, min_delta)
 
     for epoch in range(start_epoch, epochs):
+        t0 = time.perf_counter()
         beta = beta_at(epoch, beta_target, warmup)
         train_m = run_epoch(
             model, train_loader, device,
@@ -257,17 +264,6 @@ def main() -> None:
         )
         history["train"].append(train_m)
         history["val"].append(val_m)
-        # Overfit watch: with only ~222 volumes, train-vs-val divergence is the key
-        # risk, so the train/val total gap is logged every epoch.
-        gap = train_m["total"] - val_m["total"]
-        logger.info(
-            "epoch %d/%d beta=%.3f | train total=%.4f recon=%.4f kl=%.4f | "
-            "val total=%.4f recon=%.4f kl=%.4f recon_dice=%.4f blur=%.4f | gap=%.4f",
-            epoch + 1, epochs, beta,
-            train_m["total"], train_m["recon"], train_m["kl"],
-            val_m["total"], val_m["recon"], val_m["kl"],
-            val_m["recon_dice"], val_m["blur"], gap,
-        )
 
         save_checkpoint(
             ckpt_dir / f"vae3d_last_{tag}.pt", model, optimizer, epoch, config,
@@ -275,14 +271,28 @@ def main() -> None:
         )
         if improved(val_m["recon_dice"], best_dice, min_delta):
             best_dice = val_m["recon_dice"]
+            best_epoch = epoch
             epochs_since_improve = 0
             save_checkpoint(
                 ckpt_dir / f"vae3d_best_{tag}.pt", model, optimizer, epoch, config,
                 {**val_m, "best_recon_dice": best_dice},
             )
-            logger.info("new best val recon Dice=%.4f -> vae3d_best_%s.pt", best_dice, tag)
         else:
             epochs_since_improve += 1
+
+        # One concise, at-a-glance line per epoch. `gap` (train - val total) is the
+        # overfit signal: with only ~222 volumes, if train keeps dropping while val
+        # rises (gap grows), the model is memorising — augmentation would be needed.
+        # `secs` lets you estimate the total run length after the first epoch.
+        gap = train_m["total"] - val_m["total"]
+        logger.info(
+            "epoch %d/%d | %.0fs | train=%.4f val=%.4f | val_dice=%.4f blur=%.4f | "
+            "gap=%+.4f | best=%.4f @ep%d",
+            epoch + 1, epochs, time.perf_counter() - t0,
+            train_m["total"], val_m["total"],
+            val_m["recon_dice"], val_m["blur"], gap,
+            best_dice, best_epoch + 1,
+        )
 
         if preview_every and (epoch + 1) % preview_every == 0:
             save_recon_preview_3d(

@@ -289,14 +289,36 @@ class SyntheticDegrader:
     guards every output against degenerate masks.
     """
 
-    def __init__(self, params: DegradationParams | None = None) -> None:
+    def __init__(
+        self,
+        params: DegradationParams | None = None,
+        primitives: dict[
+            str, Callable[[np.ndarray, float, np.random.Generator], np.ndarray]
+        ]
+        | None = None,
+    ) -> None:
         self.params = params or DegradationParams()
+        # The primitive set this degrader dispatches to. ``None`` keeps the 2D
+        # module-global PRIMITIVES (fully behaviour-preserving — every 2D caller
+        # and test is unaffected). A 3D caller passes PRIMITIVES_3D from
+        # degradations_3d; because that dict reuses the SAME type NAMES (erode/
+        # dilate/remove_blob/add_false_positive/boundary_noise/translate), the
+        # name-based module constants (_STRONG_TYPES/_CHAIN_TYPES/_LIGHT_ONLY_TYPES)
+        # keep working unchanged in either dimension.
+        self.primitives = primitives if primitives is not None else PRIMITIVES
         # Per-type reachable Dice ranges, measured on real masks via calibrate().
         # None until calibrated; type selection then falls back to a heuristic.
         self.type_ranges: dict[str, tuple[float, float]] | None = None
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "SyntheticDegrader":
+    def from_config(
+        cls,
+        config: dict[str, Any],
+        primitives: dict[
+            str, Callable[[np.ndarray, float, np.random.Generator], np.ndarray]
+        ]
+        | None = None,
+    ) -> "SyntheticDegrader":
         section = config.get("degradation", {})
         rng_range = section.get("target_dice_range", (0.4, 0.99))
         return cls(
@@ -307,7 +329,8 @@ class SyntheticDegrader:
                 min_valid_dice=float(section.get("min_valid_dice", 0.35)),
                 max_retries=int(section.get("max_retries", 5)),
                 max_chain_steps=int(section.get("max_chain_steps", 3)),
-            )
+            ),
+            primitives=primitives,
         )
 
     # -- calibration --------------------------------------------------------
@@ -324,7 +347,7 @@ class SyntheticDegrader:
         """
         grid = np.linspace(0.05, 1.0, n_severities)
         ranges: dict[str, tuple[float, float]] = {}
-        for name in PRIMITIVES:
+        for name in self.primitives:
             lo, hi = 1.0, 0.0
             for m in masks:
                 base = _to_bool(m)
@@ -339,7 +362,7 @@ class SyntheticDegrader:
     def apply(
         self, name: str, mask: np.ndarray, severity: float, rng: np.random.Generator
     ) -> np.ndarray:
-        return PRIMITIVES[name](mask, severity, rng)
+        return self.primitives[name](mask, severity, rng)
 
     # -- public interface ---------------------------------------------------
     def make_pair(
@@ -354,7 +377,7 @@ class SyntheticDegrader:
     ) -> np.ndarray:
         """Apply one random primitive at random severity (guarded)."""
         binary = _to_bool(mask)
-        name = list(PRIMITIVES)[int(rng.integers(len(PRIMITIVES)))]
+        name = list(self.primitives)[int(rng.integers(len(self.primitives)))]
         severity = float(rng.uniform(0.0, 1.0))
         seed = int(rng.integers(0, 2**31 - 1))
         degraded = self.apply(name, binary, severity, np.random.default_rng(seed))
@@ -443,7 +466,7 @@ class SyntheticDegrader:
                 n: r for n, r in self.type_ranges.items() if n not in _LIGHT_ONLY_TYPES
             }
             return min(coherent, key=lambda n: coherent[n][0])
-        pool = _STRONG_TYPES if target_dice < _STRONG_ONLY_BELOW else tuple(PRIMITIVES)
+        pool = _STRONG_TYPES if target_dice < _STRONG_ONLY_BELOW else tuple(self.primitives)
         return pool[int(rng.integers(len(pool)))]
 
     def _search_severity(

@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------------------
+# vae3d_vq.yaml — 3D VQ-VAE model + training configuration (Phase 9).
+# Sibling of vae3d.yaml, aimed at curing the standard VAE's mean-reversion via a
+# spatial discrete codebook. Inherits dataset/slicing/split/organs from raos.yaml.
+#
+# Two model-shaped blocks on purpose:
+#   * `vae3d`     — ONLY the dataset needs input_size + bbox_margin; RAOSVolumes
+#                   reads these, so the data pipeline is byte-identical to Phase 7/8.
+#   * `vae3d_vq`  — the VQ-VAE hyper-parameters (codebook, skip). The model is built
+#                   from here. Keeping them separate means we never touch vae3d.yaml
+#                   or the existing 3D VAE.
+# The degradation block is inherited but UNUSED (VQ-VAE trains on clean volumes).
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  # Precomputed 64^3 archives already exist (train/val/test.npz), so default to the
+  # fast, byte-identical source for both the smoke and the full run.
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+# Dataset-only block (resize target + bbox margin). Same values as vae3d.yaml's full
+# run so the VQ-VAE sees exactly the volumes the standard VAE (and the diagnosis) saw.
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+vae3d_vq:
+  base_channels: 16
+  num_embeddings: 512       # codebook size (discrete latent vocabulary)
+  embedding_dim: 64         # per-code vector length; also the quantized grid channels
+  commitment_cost: 0.25     # weight of the commitment term in the VQ loss (standard)
+  use_skip: false           # start WITHOUT skips: test if quantization alone cures mean-reversion
+  input_size: [64, 64, 64]  # must match vae3d.input_size (divisible by 2^4 = 16)
+
+loss:
+  dice_weight: 1.0          # recon = BCE + dice_weight * soft-Dice. No KL (VQ replaces it).
+
+train:
+  batch_size: 8
+  num_workers: 2
+  lr: 0.0002
+  epochs: 100
+  seed: 42
+  early_stop_patience: 15
+  min_delta: 0.001
+  recon_preview_every: 5    # orthogonal-slice [input|recon] preview every N epochs
+  device: "auto"
+  cache_size: 24
+  # In-training mean-reversion + codebook diagnosis. Uses the SAME K/seed/Dice as
+  # scripts/diagnose_reconstruction.py so the VQ-VAE's cross-recon ratio is directly
+  # comparable to the standard VAE's 1.005.
+  diag_every: 5             # run the embedded diagnosis every N epochs (and at the end)
+  diag_k: 20                # number of val livers for the diagnosis (match the standalone)
+  diag_seed: 42             # selection seed (match the standalone)

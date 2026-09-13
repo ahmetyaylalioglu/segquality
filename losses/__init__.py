@@ -6,6 +6,7 @@ from losses.vae_losses import (
     reconstruction_loss,
     soft_dice_loss,
     vae_loss,
+    vq_loss,
 )
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "reconstruction_loss",
     "soft_dice_loss",
     "vae_loss",
+    "vq_loss",
 ]

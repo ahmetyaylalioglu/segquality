@@ -1,94 +1,125 @@
-# segquality — RAOS data pipeline
+# segquality — ground-truth-free 3D segmentation quality estimation
 
-Ground-truth-free segmentation quality estimation. A shape-VAE is trained on
-good anatomical masks; at test time a mask is passed through the VAE and its
-reconstruction error is used as a quality score (good masks reconstruct well,
-corrupted masks do not). **This repository currently implements only the data
-pipeline** (Phase 1) — no model, training loop, or VAE code yet.
+A shape prior (a **3D VQ-VAE**) is trained only on *good* anatomical masks. At test
+time an arbitrary segmentation mask is passed through the model and its
+**reconstruction error is used as a quality score**: masks that look like the
+learned anatomy reconstruct well (high Dice against themselves), corrupted masks do
+not. No ground truth and no image intensities are needed at scoring time — the score
+is purely shape-based, so it is organ- and modality-agnostic in principle.
 
-## Setup
+The reconstruction quality is validated by correlating the score against the *true*
+Dice of controlled synthetic degradations: a good score tracks true Dice
+(Spearman rho ~0.85).
+
+## What is in here (and the main findings)
+
+| Phase | Model | File | Result |
+|-------|-------|------|--------|
+| Baseline | Continuous-latent 3D VAE | `models/vae3d.py` | rho~0.85 **but mean-reverts** (decoder emits a generic mean shape) |
+| **Fix** | **3D VQ-VAE** (spatial discrete codebook) | `models/vae3d_vq.py` | **cures mean-reversion** (cross-recon ratio 1.005 -> ~1.24), rho~0.85, val recon Dice ~0.91 |
+| WP-2 | VQ-VAE + geometric conditioning | `models/vae3d_vq_cond.py` | **negative**: external geometry did not help (rho 0.850 -> 0.800/0.822) |
+| WP-3 | VQ-VAE with **SDF** target | `models/vae3d_vq_sdf.py` | **lossless** (rho 0.844 vs 0.850); geometry baked into the target, foundation for modality independence |
+
+- The VQ-VAE quantizer (`VectorQuantizer3D`) is a hand-written van den Oord (2017)
+  vector quantizer generalised to a 5D `(B, C, d, h, w)` spatial grid: nearest-code
+  lookup + straight-through estimator + codebook/commitment loss. No KL term.
+- WP-3's SDF model regresses a **signed distance function** (outside +, inside -,
+  boundary 0) with `SmoothL1`; a binary bridge `sdf < 0 -> inside` turns the
+  prediction back into a mask so the identical scoring/correlation machinery applies.
+
+See `ADVISOR_QA.md` for line-referenced answers to the technical review questions,
+and `figures/` for the reconstruction previews, cross-reconstruction matrix and
+correlation scatter plots.
+
+## Clone and run (checkpoints + data included via Git LFS)
+
+The three canonical checkpoints and the precomputed 64^3 mask splits ship in the
+repo through **Git LFS**, so you can clone and evaluate without downloading raw RAOS.
 
 ```bash
-python -m venv .venv
-# Windows:  .venv\Scripts\activate
-# Linux:    source .venv/bin/activate
+# 1. Git LFS must be installed once on your machine (https://git-lfs.com)
+git lfs install
+
+# 2. Clone — LFS files (*.pt, *.npz) are fetched automatically
+git clone https://github.com/ahmetyaylalioglu/segquality.git
+cd segquality
+git lfs pull            # ensure the LFS blobs are materialised
+
+# 3. Python environment (a CUDA GPU is recommended for scoring)
+conda create -n segquality python=3.10 -y
+conda activate segquality
 pip install -r requirements.txt
 ```
 
-No GPU is required for this phase (there is no training).
+What LFS brings down:
 
-## Where the RAOS data goes
-
-The raw dataset lives **outside** this repo; its location comes from the config,
-not from code. Point `dataset.root` in `configs/raos.yaml` at your RAOS folder:
-
-```yaml
-dataset:
-  root: "C:/Users/you/.../datasets/RAOS"   # use forward slashes in YAML
+```
+outputs/checkpoints/vae3d_vqvae_best.pt     # base 3D VQ-VAE   (rho ~0.85)
+outputs/checkpoints/vae3d_wp2_base_best.pt  # WP-2 baseline    (rho 0.850, binary reference)
+outputs/checkpoints/vae3d_wp3_sdf_best.pt   # WP-3 SDF-VQ-VAE  (rho 0.844)
+outputs/volumes/{train,val,test}.npz        # precomputed squashed 64^3 masks
 ```
 
-RAOS is organized in nnU-Net style with three subsets — `CancerImages(Set1)`,
-`AfterSurgery(Set2)`, `MissingOrgans(Set3)` — each containing
-`imagesTr/labelsTr`, `imagesVal/labelsVal`, `imagesTs/labelsTs`. Image and label
-files share the same filename (a DICOM UID), so `patient_id` = filename stem.
+## Evaluate (reproduce the correlation numbers)
 
-Training uses only the clean anatomy in Set1. Set2/Set3 (post-surgical and
-missing-organ cases) are the real evaluation ground for a quality model — they
-are indexed but held out from training.
+The precomputed splits are the default data source, so these run out of the box:
 
-## Run order
+```bash
+# Base 3D VQ-VAE: reconstruction error vs true Dice
+python scripts/evaluate_correlation_3d_vq.py \
+    --config configs/vae3d_vq.yaml \
+    --checkpoint outputs/checkpoints/vae3d_vqvae_best.pt \
+    --split test --n-per-mask 5 --seed 42
 
-Run each script with `--config configs/raos.yaml`.
+# WP-3 SDF-VQ-VAE (scored through the sdf<0 binary bridge)
+python scripts/evaluate_correlation_3d_sdf.py \
+    --config configs/vae3d_vq.yaml \
+    --checkpoint outputs/checkpoints/vae3d_wp3_sdf_best.pt \
+    --split test --n-per-mask 5 --seed 42
+```
 
-1. **`scripts/inspect_raos.py`** — discovers file naming, label ids, spacings and
-   the label-value histogram. Writes `outputs/raos_inspection.json` and prints a
-   copy-paste-ready `organs:` YAML block.
-2. **Fill `configs/raos.yaml`** — paste the discovered `organs:` map and set
-   `target:` to the organ you want (e.g. `liver`).
-3. **`scripts/build_index.py`** — precomputes a per-slice index for the target
-   organ (skips slices below `min_organ_area`) so the dataset never opens a full
-   NIfTI volume in `__getitem__`. Indexes both training and held-out subsets.
-   Re-running is a no-op unless `--force` is given.
-4. **`scripts/dataset_stats.py`** — per-split patient/slice counts, organ-area
-   distribution, patient-leakage check, and the Dice distribution of 1000 random
-   degradations. Writes `outputs/stats.json` and `outputs/dice_distribution.png`.
-5. **`scripts/visualize_samples.py`** — renders `outputs/samples_{split}.png`: a
-   grid of original masks alongside degraded versions with their true Dice.
+Each writes a correlation table to the console plus `outputs/correlation_results_*.json`
+and scatter/comparison PNGs.
+
+## Train from scratch (optional)
+
+```bash
+# base VQ-VAE
+python scripts/train_vae3d_vq.py --config configs/vae3d_vq.yaml --num-workers 0
+# WP-3 SDF target
+python scripts/train_vae3d_vq_sdf.py --tag wp3_sdf --num-workers 0
+```
+
+On Windows use `--num-workers 0` (multiprocessing DataLoader + subprocess can crash
+the Torch DLL). Training reads only *clean* masks; degradation happens exclusively in
+the evaluation scripts.
 
 ## Testing
 
 ```bash
-pytest
+pytest -p no:logfire
 ```
 
-All tests use synthetic masks and pass **without** the raw data.
+The suite (162 tests) uses synthetic masks and passes without the raw data.
 
 ## Folder layout
 
 ```
 segquality/
-  configs/        default.yaml (common) + raos.yaml (inherits via _base_)
-  data/           config loader (__init__), dataset, transforms, degradations, splits
-  scripts/        inspect / build_index / dataset_stats / visualize entry points
-  tests/          pytest suite (synthetic data only)
-  outputs/        generated indexes, splits, stats and plots (git-ignored)
+  configs/     YAML configs (vae3d_vq.yaml is the VQ-VAE config)
+  data/        config loader, RAOS dataset, transforms, 2D/3D degradations
+  models/      vae3d, vae3d_vq (+ _cond, _sdf variants)
+  quality/     score functions, geometric features, SDF helpers
+  scripts/     train_* and evaluate_correlation_3d* entry points
+  tests/       pytest suite (synthetic data only)
+  figures/     curated result figures for the write-up
+  outputs/     generated artifacts; only the 3 canonical checkpoints + 3 npz are tracked (LFS)
 ```
 
-## Design notes
+## Notes
 
-- All file access uses `pathlib.Path`; moving to a server only changes
-  `dataset.root` in the config.
-- The slicing `axis` is a parameter, never hard-coded, so the later move to 3D
-  volumes is painless.
-- Splits are patient-based and deterministic (fixed seed); every indexed slice
-  records its `source_subset` and `original_split` for later comparison against
-  published RAOS benchmarks.
-- **Degradations act in resized (128×128) space** (`degradation.space: resized`),
-  and true Dice is measured on that same resized pair — so the VAE input and the
-  Dice label live in one space and no resize-induced difference leaks into the
-  quality score as noise.
-- Degradations follow a `mask -> (degraded_mask, true_dice)` interface
-  (`DegradationSource`); the synthetic corruptor is one implementation, so real
-  segmentation-model outputs can later be fed through the identical downstream
-  code. Targets are drawn first and severity is solved by binary search, keeping
-  true Dice spread across ~[0.4, 0.99] instead of piling up near 1.0.
+- The raw RAOS dataset lives **outside** the repo; its path comes from
+  `configs/raos.yaml` (`dataset.root`). Only needed for `--data-source nifti` or to
+  regenerate the precomputed npz — the shipped npz cover the evaluation.
+- Everything operates in the squashed 64^3 mask space so degradation, reconstruction
+  and true-Dice measurement all share one coordinate frame.

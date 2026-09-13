@@ -73,3 +73,24 @@ def vae_loss(
     kl = kl_divergence(mu, logvar)
     total = recon + beta * kl
     return {"total": total, "recon": recon, "bce": bce, "dice": dice, "kl": kl}
+
+
+def vq_loss(
+    logits: Tensor,
+    target: Tensor,
+    vq_term: Tensor,
+    dice_weight: float = 1.0,
+) -> dict[str, Tensor]:
+    """Full VQ-VAE loss ``recon + vq_term`` plus every component for logging.
+
+    Unlike :func:`vae_loss` there is **no KL term**: a VQ-VAE replaces the KL
+    regulariser with the quantizer's codebook + commitment loss (``vq_term``,
+    already combined and weighted by the quantizer's ``commitment_cost``). The
+    reconstruction term is reused verbatim from :func:`reconstruction_loss`, so the
+    2D/3D VAE and the VQ-VAE are trained against the identical shape objective.
+
+    Returns a dict with keys ``total, recon, bce, dice, vq``.
+    """
+    recon, bce, dice = reconstruction_loss(logits, target, dice_weight)
+    total = recon + vq_term
+    return {"total": total, "recon": recon, "bce": bce, "dice": dice, "vq": vq_term}

@@ -1,13 +1,32 @@
-outputs/
-__pycache__/
-# Raw label/image volumes and precomputed archives are large — never push them;
-# they belong on Google Drive / local disk, not in git (would break the push).
+# Raw label/image volumes are large and live outside the repo (Google Drive /
+# local disk). Never commit them.
 *.nii.gz
 *.nii
+
+# By default every *.npz is ignored (sweep caches, scratch archives). The three
+# canonical precomputed splits are re-included below so the advisor can clone and
+# run without downloading raw RAOS.
 *.npz
+
+# outputs/ is generated. Ignore it wholesale, then re-include ONLY the canonical
+# artifacts the advisor needs to clone-and-run. These travel via Git LFS (see
+# .gitattributes) so the repo itself stays small.
+outputs/*
+!outputs/checkpoints/
+outputs/checkpoints/*
+!outputs/checkpoints/vae3d_vqvae_best.pt
+!outputs/checkpoints/vae3d_wp2_base_best.pt
+!outputs/checkpoints/vae3d_wp3_sdf_best.pt
+!outputs/volumes/
+outputs/volumes/*
+!outputs/volumes/train.npz
+!outputs/volumes/val.npz
+!outputs/volumes/test.npz
+
 .venv/
 
 # Python
+__pycache__/
 *.pyc
 *.pyo
 *.egg-info/

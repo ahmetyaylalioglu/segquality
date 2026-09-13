@@ -1,0 +1,4 @@
+# Model checkpoints and precomputed data archives are binary and large — store
+# them with Git LFS so `git clone` brings them down without bloating history.
+*.pt filter=lfs diff=lfs merge=lfs -text
+*.npz filter=lfs diff=lfs merge=lfs -text
