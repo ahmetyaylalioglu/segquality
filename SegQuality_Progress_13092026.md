@@ -1,6 +1,6 @@
 # SegQuality — İlerleme Raporu (13.09.2026)
 
-Danışman: Zehra Uslu Hoca · Repo: https://github.com/ahmetyaylalioglu/segquality
+Danışman: Fatmatülzehra Uslu Hoca · Repo: https://github.com/ahmetyaylalioglu/segquality
 
 Bu dosya iki bölümden oluşur:
 - **Bölüm A (§1–5):** Önceki danışman sorularına satır-referanslı yanıtlar. Bu
