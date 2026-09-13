@@ -33,6 +33,9 @@ vae3d_vq:
   commitment_cost: 0.25     # weight of the commitment term in the VQ loss (standard)
   use_skip: false           # start WITHOUT skips: test if quantization alone cures mean-reversion
   input_size: [64, 64, 64]  # must match vae3d.input_size (divisible by 2^4 = 16)
+  vq_mode: "standard"       # "standard" (codebook_loss + commitment) | "commitment_only"
+                            # (advisor variant: drop codebook_loss -> frozen codebook; use
+                            #  commitment_cost: 1.0 with this mode). Overridable via --vq-mode.
 
 loss:
   dice_weight: 1.0          # recon = BCE + dice_weight * soft-Dice. No KL (VQ replaces it).

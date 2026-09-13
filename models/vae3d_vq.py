@@ -51,15 +51,45 @@ class VectorQuantizer3D(nn.Module):
     toward their chosen embeddings so the encoder "commits" to codes.
     """
 
-    def __init__(self, num_embeddings: int, embedding_dim: int, commitment_cost: float) -> None:
+    def __init__(self, num_embeddings: int, embedding_dim: int, commitment_cost: float,
+                 vq_mode: str = "standard") -> None:
         super().__init__()
         self.num_embeddings = int(num_embeddings)
         self.embedding_dim = int(embedding_dim)
         self.commitment_cost = float(commitment_cost)
+        # ``vq_mode`` selects the VQ objective (default = standard van den Oord VQ-VAE):
+        #   "standard"                -> vq_loss = codebook_loss + commitment_cost * commitment_loss
+        #   "commitment_only"         -> vq_loss = commitment_cost * commitment_loss (NO codebook_loss)
+        #   "commitment_only_scaled"  -> commitment_only, BUT codes init at N(0,1) scale
+        #   "commitment_only_cosine"  -> commitment_only, BUT encoder + codes L2-normalised (cosine VQ)
+        #
+        # Advisor rationale for dropping codebook_loss: here the VQ-VAE is used for QC/denoising.
+        # ``codebook_loss = MSE(z_q, z.detach())`` is the ONLY gradient path to the codebook, so
+        # dropping it (with no EMA) FREEZES the codebook and forces the encoder to align to fixed
+        # reference codes -- we do NOT want degraded-mask features to drag the codebook toward
+        # themselves; we want a clean reference recovered from them.
+        #
+        # Why the *_scaled / *_cosine variants: plain "commitment_only" freezes codes at the tiny
+        # uniform(-1/K,1/K) init (~+-0.002) while the encoder output is free to grow (measured std
+        # ~19), so commitment = ||z - z_q||^2 diverges (0.7 -> 964). Two fixes that KEEP the codebook
+        # frozen (honouring the rationale): (scaled) init codes at N(0,1) so a frozen codebook already
+        # lives at feature scale; (cosine) L2-normalise the encoder AND codes so magnitude cannot
+        # diverge at all. EMA is deliberately NOT offered: EMA would move the codes toward the
+        # encoder features -- exactly what the advisor wants to avoid -- so it is the wrong cure here.
+        _MODES = ("standard", "commitment_only", "commitment_only_scaled", "commitment_only_cosine")
+        if vq_mode not in _MODES:
+            raise ValueError(f"vq_mode must be one of {_MODES}, got {vq_mode!r}")
+        self.vq_mode = vq_mode
+        self._frozen = vq_mode.startswith("commitment_only")   # no codebook_loss
+        self._cosine = vq_mode == "commitment_only_cosine"      # L2-normalise enc + codes
         self.embedding = nn.Embedding(self.num_embeddings, self.embedding_dim)
-        # Uniform init in [-1/K, 1/K] is the usual VQ-VAE choice: small, unbiased.
-        bound = 1.0 / self.num_embeddings
-        self.embedding.weight.data.uniform_(-bound, bound)
+        if vq_mode in ("commitment_only_scaled", "commitment_only_cosine"):
+            # Unit-scale init so a FROZEN codebook sits at the encoder-feature scale.
+            self.embedding.weight.data.normal_(0.0, 1.0)
+        else:
+            # Uniform init in [-1/K, 1/K] is the usual VQ-VAE choice: small, unbiased.
+            bound = 1.0 / self.num_embeddings
+            self.embedding.weight.data.uniform_(-bound, bound)
 
     def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
         """Quantize ``z_e`` (B, D, d, h, w). Returns ``(z_q, vq_loss, info)``.
@@ -70,26 +100,37 @@ class VectorQuantizer3D(nn.Module):
         """
         # (B, D, d, h, w) -> (B, d, h, w, D) -> (N, D) so each row is one position.
         z = z_e.permute(0, 2, 3, 4, 1).contiguous()
-        flat = z.view(-1, self.embedding_dim)
+        # ``zc``/``wc`` are the vectors actually quantized/compared. For cosine VQ both the
+        # encoder positions and the codes are L2-normalised (bounds the magnitude so commitment
+        # cannot diverge); otherwise they are the raw encoder output and codebook (identical to
+        # the standard path -- default behaviour is byte-for-byte unchanged).
+        zc = F.normalize(z, dim=-1) if self._cosine else z
+        wc = F.normalize(self.embedding.weight, dim=1) if self._cosine else self.embedding.weight
+        flat = zc.reshape(-1, self.embedding_dim)
 
         # Squared L2 distance to every codebook vector, then nearest index.
-        w = self.embedding.weight  # (K, D)
         dist = (
             flat.pow(2).sum(1, keepdim=True)
-            - 2.0 * flat @ w.t()
-            + w.pow(2).sum(1)
+            - 2.0 * flat @ wc.t()
+            + wc.pow(2).sum(1)
         )
         indices = dist.argmin(1)                    # (N,)
-        z_q_flat = self.embedding(indices)          # (N, D) — exact codebook rows
-        z_q = z_q_flat.view(z.shape)                # (B, d, h, w, D)
+        z_q_flat = wc[indices]                       # (N, D) — exact codebook rows
+        z_q = z_q_flat.view(zc.shape)                # (B, d, h, w, D)
 
         # VQ objective: codebook (move embeddings) + commitment (move encoder).
-        codebook_loss = F.mse_loss(z_q, z.detach())
-        commitment_loss = F.mse_loss(z, z_q.detach())
-        vq_loss = codebook_loss + self.commitment_cost * commitment_loss
+        commitment_loss = F.mse_loss(zc, z_q.detach())
+        if self._frozen:
+            # Codebook loss dropped -> embedding.weight receives NO gradient -> codebook is
+            # frozen at init; only the encoder is trained (to commit to fixed reference codes).
+            vq_loss = self.commitment_cost * commitment_loss
+        else:
+            codebook_loss = F.mse_loss(z_q, zc.detach())
+            vq_loss = codebook_loss + self.commitment_cost * commitment_loss
 
-        # Straight-through: value equals z_q, but gradient flows to z_e unchanged.
-        z_q = z + (z_q - z).detach()
+        # Straight-through: value equals z_q, but gradient flows to z_e unchanged (through the
+        # L2-normalise in the cosine case, which is differentiable).
+        z_q = zc + (z_q - zc).detach()
         z_q = z_q.permute(0, 4, 1, 2, 3).contiguous()  # back to (B, D, d, h, w)
 
         # Diagnostics: how many codes are actually used, and perplexity (effective
@@ -114,6 +155,7 @@ class ConvVQVAE3D(nn.Module):
         input_size: tuple[int, int, int] = (64, 64, 64),
         in_channels: int = 1,
         use_skip: bool = False,
+        vq_mode: str = "standard",
     ) -> None:
         super().__init__()
         self.base_channels = int(base_channels)
@@ -123,6 +165,7 @@ class ConvVQVAE3D(nn.Module):
         self.input_size = (int(input_size[0]), int(input_size[1]), int(input_size[2]))
         self.in_channels = int(in_channels)
         self.use_skip = bool(use_skip)
+        self.vq_mode = str(vq_mode)
 
         n_stages = len(_CHANNEL_MULTS)
         divisor = 2**n_stages
@@ -140,7 +183,8 @@ class ConvVQVAE3D(nn.Module):
         self.enc_stages = self._build_encoder(channels)
         # Project bottleneck channels -> embedding_dim (the quantized grid), and back.
         self.pre_quant = nn.Conv3d(self._bottleneck_channels, self.embedding_dim, kernel_size=1)
-        self.quantizer = VectorQuantizer3D(self.num_embeddings, self.embedding_dim, self.commitment_cost)
+        self.quantizer = VectorQuantizer3D(self.num_embeddings, self.embedding_dim,
+                                           self.commitment_cost, vq_mode=self.vq_mode)
         self.post_quant = nn.Conv3d(self.embedding_dim, self._bottleneck_channels, kernel_size=1)
         self.dec_stages = self._build_decoder(channels)
 

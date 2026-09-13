@@ -80,6 +80,7 @@ def build_model(config: dict[str, Any]) -> ConvVQVAE3D:
         commitment_cost=float(v["commitment_cost"]),
         input_size=tuple(v["input_size"]),
         use_skip=bool(v["use_skip"]),
+        vq_mode=str(v.get("vq_mode", "standard")),
     )
 
 
@@ -222,6 +223,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=None, help="override train.epochs")
     parser.add_argument("--num-embeddings", type=int, default=None,
                         help="override codebook size (vae3d_vq.num_embeddings); None -> use config")
+    parser.add_argument("--vq-mode",
+                        choices=("standard", "commitment_only",
+                                 "commitment_only_scaled", "commitment_only_cosine"),
+                        default=None,
+                        help="VQ objective; None -> use config (default 'standard'). "
+                             "'commitment_only' drops codebook_loss -> frozen (tiny) codebook; "
+                             "'*_scaled' freezes at N(0,1) init; '*_cosine' L2-normalises enc+codes")
+    parser.add_argument("--commitment-cost", type=float, default=None,
+                        help="override vae3d_vq.commitment_cost; None -> use config. "
+                             "Advisor asks 1.0 for the commitment_only variant")
     parser.add_argument("--tag", default="vqvae",
                         help="checkpoint/output name tag; default 'vqvae' keeps existing filenames")
     parser.add_argument("--num-workers", type=int, default=None,
@@ -243,6 +254,11 @@ def main() -> None:
     # Enables the codebook ablation without editing configs/vae3d_vq.yaml.
     if args.num_embeddings is not None:
         config["vae3d_vq"]["num_embeddings"] = int(args.num_embeddings)
+    # Advisor-requested VQ variant: 'commitment_only' freezes the codebook (no codebook_loss).
+    if args.vq_mode is not None:
+        config["vae3d_vq"]["vq_mode"] = str(args.vq_mode)
+    if args.commitment_cost is not None:
+        config["vae3d_vq"]["commitment_cost"] = float(args.commitment_cost)
     if args.num_workers is not None:
         config["train"]["num_workers"] = int(args.num_workers)
 
