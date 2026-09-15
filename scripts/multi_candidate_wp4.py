@@ -64,6 +64,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--batch", type=int, default=8)
     p.add_argument("--figure", default="figures/wp4/wp4_uncertainty.png")
+    p.add_argument("--fig-n", type=int, default=6,
+                   help="degraded figure rows; each row is a DIFFERENT patient (one degraded vol per block)")
+    p.add_argument("--fig-clean", type=int, default=2,
+                   help="clean (un-degraded) rows shown FIRST as a contrast (uncertainty should be low)")
     p.add_argument("--voxel-sample", type=int, default=200_000,
                    help="max error/non-error voxels to pool for the AUROC")
     return p.parse_args()
@@ -146,23 +150,34 @@ def save_ortho_figure(items: list[dict], path: Path) -> None:
     import matplotlib.pyplot as plt
 
     n = len(items)
-    fig, axes = plt.subplots(n, 4, figsize=(12, 3 * n))
+    fig, axes = plt.subplots(n, 5, figsize=(15, 3 * n))
     if n == 1:
         axes = axes[None, :]
-    titles = ["input (axial mid)", "consensus (P>0.5)", "uncertainty (entropy)", "error = input XOR ref"]
+    titles = ["input (axial mid)", "ground truth (ref)", "consensus (P>0.5)",
+              "uncertainty (entropy)", "error = input XOR ref"]
+    # Fix the uncertainty colour scale across ALL rows (binary entropy maxes at ln 2 nats),
+    # so a clean mask's low uncertainty truly looks darker than a degraded one's — otherwise
+    # per-panel auto-scaling would make every row equally bright and hide the contrast.
+    umax = float(np.log(2.0))
     for row, it in enumerate(items):
         z = it["input"].shape[0] // 2
-        panels = [it["input"][z], it["consensus"][z], it["uncertainty"][z], it["error"][z]]
-        cmaps = ["gray", "gray", "magma", "Reds"]
+        panels = [it["input"][z], it["reference"][z], it["consensus"][z],
+                  it["uncertainty"][z], it["error"][z]]
+        cmaps = ["gray", "gray", "gray", "magma", "Reds"]
         for col, (panel, cm) in enumerate(zip(panels, cmaps)):
             ax = axes[row, col]
-            ax.imshow(panel, cmap=cm)
+            if col == 3:                                   # uncertainty: shared 0..ln2 scale
+                ax.imshow(panel, cmap=cm, vmin=0.0, vmax=umax)
+            else:
+                ax.imshow(panel, cmap=cm)
             ax.set_xticks([]); ax.set_yticks([])
             if row == 0:
                 ax.set_title(titles[col], fontsize=10)
-        axes[row, 0].set_ylabel(f"D={it['true_dice']:.2f}", fontsize=9)
-    fig.suptitle("WP-4 distance-weighted consensus + uncertainty (degraded volumes)", fontsize=12)
-    fig.tight_layout()
+        tag = "CLEAN" if it.get("clean") else "DEGRADED"
+        axes[row, 0].set_ylabel(f"{tag}\nD={it['true_dice']:.2f}", fontsize=9)
+    fig.suptitle("WP-4 distance-weighted consensus + uncertainty "
+                 "(clean contrast rows first, then degraded)", fontsize=12, y=1.0)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=110, bbox_inches="tight")
     plt.close(fig)
@@ -195,7 +210,9 @@ def main() -> None:
     vol_uncert = np.zeros(len(masks), dtype=np.float64)   # mean uncertainty per volume
     vox_scores: list[np.ndarray] = []                     # pooled uncertainty (degraded)
     vox_labels: list[np.ndarray] = []                     # pooled error mask (degraded)
-    fig_items: list[dict] = []
+    fig_items: list[dict] = []                            # degraded rows
+    fig_blocks: set[int] = set()                          # blocks (patients) already in the figure
+    fig_clean: list[dict] = []                            # clean (un-degraded) contrast rows
     for start in range(0, len(masks), args.batch):
         chunk = masks[start:start + args.batch]
         x = torch.from_numpy(chunk.astype(np.float32)).unsqueeze(1).to(device)
@@ -205,19 +222,36 @@ def main() -> None:
         for j in range(len(chunk)):
             gi = start + j
             vol_uncert[gi] = float(Un[j].mean())
-            ref = masks[(gi // block) * block]            # clean reference of this block
+            blk = gi // block                             # block index == patient index
+            ref = masks[blk * block]                      # clean reference (ground truth) of this block
             err = np.logical_xor(chunk[j].astype(bool), ref.astype(bool))
             if not is_clean[gi]:
                 vox_scores.append(Un[j].ravel())
                 vox_labels.append(err.ravel())
-                if len(fig_items) < 4 and err.sum() > 0:
+                # one row per DIFFERENT patient: skip a block already shown in the figure
+                if blk not in fig_blocks and len(fig_items) < args.fig_n and err.sum() > 0:
+                    fig_blocks.add(blk)
                     fig_items.append({
                         "input": chunk[j].astype(np.float32),
+                        "reference": ref.astype(np.float32),
                         "consensus": (Pn[j] > 0.5).astype(np.float32),
                         "uncertainty": Un[j],
                         "error": err.astype(np.float32),
                         "true_dice": float(true_dice[gi]),
                     })
+            elif len(fig_clean) < args.fig_clean:
+                # clean (un-degraded) contrast: input == reference, so error is empty and
+                # uncertainty should be low (only baseline boundary) -> shows the system
+                # does NOT flag a good mask.
+                fig_clean.append({
+                    "input": chunk[j].astype(np.float32),
+                    "reference": ref.astype(np.float32),
+                    "consensus": (Pn[j] > 0.5).astype(np.float32),
+                    "uncertainty": Un[j],
+                    "error": err.astype(np.float32),
+                    "true_dice": float(true_dice[gi]),
+                    "clean": True,
+                })
 
     # ---- VALIDATION 1: voxel-level AUROC (uncertainty predicts the error region) ----
     scores = np.concatenate(vox_scores)
@@ -245,9 +279,21 @@ def main() -> None:
     logger.info("[VALID 2] Spearman(mean uncertainty, 1-true_Dice): all=%.4f | degraded-only=%.4f "
                 "(positive = more corrupt -> more uncertain)", float(rho_all), float(rho_deg))
 
-    # ---- figure ----
-    if fig_items:
-        save_ortho_figure(fig_items, PROJECT_ROOT / args.figure)
+    # ---- figure (clean contrast rows first, then degraded) ----
+    fig_rows = fig_clean + fig_items
+    if fig_rows:
+        logger.info("──────── FIGURE ROW METRICS ────────")
+        logger.info("%-4s %-9s %-10s %-14s %-12s", "row", "kind", "true_Dice",
+                    "consensus_Dice", "mean_uncert")
+        for i, it in enumerate(fig_rows):
+            cons = it["consensus"].astype(bool)
+            ref = it["reference"].astype(bool)
+            inter = np.logical_and(cons, ref).sum()
+            cdice = 2.0 * inter / (cons.sum() + ref.sum() + EPS)
+            kind = "CLEAN" if it.get("clean") else "DEGRADED"
+            logger.info("%-4d %-9s %-10.4f %-14.4f %-12.5f", i + 1, kind,
+                        it["true_dice"], cdice, float(it["uncertainty"].mean()))
+        save_ortho_figure(fig_rows, PROJECT_ROOT / args.figure)
 
     logger.info("──────── WP-4 SUMMARY ────────")
     logger.info("voxel AUROC=%.4f | volume rho(all)=%.4f rho(deg)=%.4f | k=%d | n=%d",
