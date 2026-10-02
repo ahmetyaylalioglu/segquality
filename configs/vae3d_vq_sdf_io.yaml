@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# vae3d_vq_sdf_io.yaml — SDF-input / SDF-output 3D VQ-VAE (advisor request).
+#
+# Sibling of vae3d_vq.yaml. Same encoder/decoder/codebook hyper-parameters, but
+# the model both CONSUMES and PREDICTS the normalised truncated SDF of the mask
+# (binary -> SDF -> model -> SDF -> binary), per the attached paper's eq. 1. WP-3
+# (vae3d_vq_sdf) only fed a binary INPUT; here the input is an SDF too.
+#
+# The model is built from the `vae3d_vq` block (byte-identical to vae3d_vq.yaml),
+# so a checkpoint loads with the same block. The `vae3d_vq_sdf_io` block records
+# the SDF spec (delta / normalisation) in the checkpoint config.
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+vae3d_vq:
+  base_channels: 16
+  num_embeddings: 512
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_skip: false
+  input_size: [64, 64, 64]
+  vq_mode: "standard"
+
+# SDF-IO specification (recorded in the checkpoint; delta = TSDF half-width δ). The
+# normalised SDF is truncate(signed_distance, delta) / delta, landing in [-1, 1].
+vae3d_vq_sdf_io:
+  delta: 3.0
+  normalize: true
+
+loss:
+  dice_weight: 1.0
+
+train:
+  batch_size: 8
+  num_workers: 2
+  lr: 0.0002
+  epochs: 100
+  seed: 42
+  early_stop_patience: 15
+  min_delta: 0.001
+  recon_preview_every: 5
+  device: "auto"
+  cache_size: 24
+  diag_every: 5
+  diag_k: 20
+  diag_seed: 42
