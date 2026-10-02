@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+# vae3d_simvq.yaml — 3D SimVQ-VAE model + training configuration (Phase 12).
+# Sibling of vae3d_vq.yaml. Implements the advisor's paper "Addressing
+# Representation Collapse in Vector Quantized Models with One Linear Layer"
+# (SimVQ): the codebook is reparametrized C -> C @ W with C frozen and only a
+# single shared linear layer W trained, curing codebook collapse (~100% usage).
+# Inherits dataset/slicing/split/organs from raos.yaml, identical to vae3d_vq.
+#
+# Block layout mirrors vae3d_vq.yaml exactly so the exam stays byte-identical:
+#   * `vae3d`        — dataset input_size + bbox_margin (RAOSVolumes reads these).
+#   * `vae3d_vq`     — shared VQ hyper-params (codebook size, dim, commitment).
+#                      The SimVQ model reads the SAME block; there is NO vq_mode
+#                      (SimVQ has a single fixed objective), so it is omitted.
+# The degradation block is inherited but UNUSED (trained on clean volumes).
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+vae3d_vq:
+  base_channels: 16
+  num_embeddings: 512       # codebook size (frozen base C rows)
+  embedding_dim: 64         # per-code vector length; also W is (dim x dim)
+  commitment_cost: 0.25     # weight of the commitment term in the SimVQ loss
+  use_skip: false           # start WITHOUT skips (test SimVQ quantization alone)
+  input_size: [64, 64, 64]  # must match vae3d.input_size (divisible by 2^4 = 16)
+
+loss:
+  dice_weight: 1.0          # recon = BCE + dice_weight * soft-Dice. No KL.
+
+train:
+  batch_size: 8
+  num_workers: 2
+  lr: 0.0002
+  epochs: 100
+  seed: 42
+  early_stop_patience: 15
+  min_delta: 0.001
+  recon_preview_every: 5
+  device: "auto"
+  cache_size: 24
+  diag_every: 5
+  diag_k: 20
+  diag_seed: 42

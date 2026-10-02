@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# deepsdf.yaml — DeepSDF auto-decoder (continuous implicit shape prior).
+#
+# Sibling of vae3d_vq.yaml. Reuses the SAME precomputed 64^3 mask archives, the
+# SAME dataset block (input_size / bbox_margin via `vae3d`) and the SAME SDF sign
+# convention as WP-3, so the shape prior it learns is comparable to the VQ line.
+# Only NEW blocks are added here; no existing config is edited.
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+# Dataset-only block (resize target + bbox margin) — identical to the VQ configs so
+# DeepSDF sees exactly the volumes the VQ-VAE (and the diagnosis) saw.
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+deepsdf:
+  latent_dim: 128           # one continuous code per training shape
+  hidden_dim: 512           # coordinate-MLP width (Park et al., 2019)
+  num_layers: 8             # coordinate-MLP depth
+  skip_layers: [4]          # re-concatenate the (z, xyz) input at this layer
+  dropout: 0.2
+  latent_init_std: 0.01     # N(0, 0.01) latent init (paper)
+  weight_norm: true
+  truncation: 3.0           # TSDF half-width (matches quality/sdf.py)
+  surface_band: 2.0         # |sdf| <= band => near-surface sampling pool
+
+train:
+  points_per_shape: 4096    # SDF samples per shape per step
+  near_surface_frac: 0.5    # fraction of points drawn from the surface band
+  shapes_per_batch: 8       # shapes optimised together per step
+  lr: 0.0005                # decoder LR
+  latent_lr: 0.001          # per-shape latent LR (paper uses a larger latent LR)
+  latent_reg: 0.0001        # weight of the ||z||^2 code regulariser
+  epochs: 200
+  seed: 42
+  device: "auto"
+  early_stop_patience: 25
+  min_delta: 0.001
+  recon_every: 10           # decode a fixed train subset -> bridge Dice, every N epochs
+  recon_k: 12               # number of train shapes for the recon-Dice sanity metric
+  recon_seed: 42
