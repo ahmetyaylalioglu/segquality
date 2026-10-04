@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# vae3d_imgcond_fpfn.yaml — FP/FN dual-head image-conditioned 3D VQ-VAE (dir G).
+#
+# Same 2-channel [grayscale CT, broken mask] input as the E2-E7 image-conditioned
+# line, but the decoder emits TWO binary masks: a false-positive mask (voxels to
+# remove) and a false-negative mask (voxels to add), both keyed to the input mask
+# so the model is forced to USE it. The model is built from the `vae3d_vq` block
+# (byte-identical to vae3d_vq_sdf_io.yaml) with out_channels=2; a checkpoint loads
+# with the same block.
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+vae3d_vq:
+  base_channels: 16
+  num_embeddings: 512
+  embedding_dim: 64
+  commitment_cost: 0.25
+  use_skip: false
+  input_size: [64, 64, 64]
+  vq_mode: "standard"
+
+# SDF-IO spec for the --head sdfio variants (delta = TSDF half-width δ; the normalised SDF
+# is truncate(signed_distance, delta) / delta in [-1, 1]). Ignored by the binary head.
+vae3d_vq_sdf_io:
+  delta: 3.0
+  normalize: true
+
+loss:
+  dice_weight: 1.0
+
+train:
+  batch_size: 8
+  num_workers: 2
+  lr: 0.0002
+  epochs: 100
+  seed: 42
+  early_stop_patience: 15
+  min_delta: 0.001
+  recon_preview_every: 5
+  device: "auto"
+  cache_size: 24
+  diag_every: 5
+  diag_k: 20
+  diag_seed: 42

@@ -15,7 +15,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import nbformat  # noqa: E402
 
-NB = Path(__file__).with_name("goruntu_kanali_raporu.ipynb")
+NB = (Path(sys.argv[1]) if len(sys.argv) > 1
+      else Path(__file__).with_name("goruntu_kanali_raporu.ipynb"))
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
