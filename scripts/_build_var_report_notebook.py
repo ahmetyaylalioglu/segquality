@@ -680,6 +680,13 @@ if 'VAR' in recon_results:
                        'Dice girdi': np.nan, 'Dice çıktı': np.nan, 'ΔDice': np.nan,
                        'ASSD girdi': np.nan, 'ASSD çıktı': np.nan, 'ΔASSD': np.nan,
                        'kalite ρ (skor)': round(rd, 3), 'skor adı': 'recon_dice'})
+# 1b) VAR + GAN (Eq.5 hinge) — düzeltme yok, yalnız QC sinyali; GAN katkı kontrolü
+if 'VAR+GAN dengeli' in gan_results:
+    rdg = gan_results['VAR+GAN dengeli']['summary']['recon_dice']['global']['spearman']
+    toplu_rows.append({'metot': 'VAR + GAN (Eq.5, dengeli)', 'düzeltme': 'yok',
+                       'Dice girdi': np.nan, 'Dice çıktı': np.nan, 'ΔDice': np.nan,
+                       'ASSD girdi': np.nan, 'ASSD çıktı': np.nan, 'ΔASSD': np.nan,
+                       'kalite ρ (skor)': round(rdg, 3), 'skor adı': 'recon_dice'})
 # 2) FP/FN refiner'sız (g_var)
 if 'G-VAR/ikili' in fpfn_results:
     di, do, ai, ao = _eval_corrector(_gvar_corrected, fpfn_results['G-VAR/ikili']['model'])
@@ -706,6 +713,7 @@ display(df_toplu)
 df_toplu.to_csv(PROJECT_ROOT / 'outputs' / 'rapor_var_faz5_toplu.csv', index=False)
 print('Okuma: Dice çıktı ↑ ve ASSD çıktı ↓ daha iyi düzeltme; kalite ρ ↑ daha iyi GT-free sinyal.')
 print('Geçmiş metot maske DÜZELTMEZ (yalnız QC sinyali verir), o yüzden Dice/ASSD sütunları boş.')
+print('GAN (Eq.5) de maske düzeltmez; recon_dice ρ saf VAR\'a göre ~aynı (0.866→0.873), QC kazancı yok.')
 """)
 
 md(r"""
@@ -880,6 +888,42 @@ if cascade is not None:
     fig.savefig(out, dpi=130, bbox_inches='tight'); print('kaydedildi:', out); plt.show()
 else:
     print('cascade yok — 3B hücre atlandı')
+""")
+
+# ---------------------------------------------------------------- Faz 6
+md(r"""
+## Faz 6 — Ek keşif: görüntüsüz latent-difüzyon lokalizatörü
+
+Ana hattın dışında, **görüntü kullanmayan** bir latent-difüzyon (AnoDDPM benzeri) lokalizatör de
+denendi: bozuk maskenin VAR latenti kısmi gürültülenip geri denoise edilir, anomali haritası
+`|bozuk − decode(denoise(latent))|` ile çıkarılır. Yalnız **şekle** bakar (görüntü yok), bu yüzden
+adil kıyas görüntüsüz taban çizgisi `recon_diff/VAR`'dır. Tablo `outputs/localization_results.json`'dan
+okunur: voxel-AUROC ve AP (seyrek hata vokselleri için PR-AUC). Görüntü-koşullu yöntemler (fpfn,
+cascade) yalnızca referans olarak eklenmiştir — difüzyon onlarla değil, görüntüsüz baseline ile yarışır.
+""")
+
+code(r"""
+import json
+_loc = json.load(open(PROJECT_ROOT / 'outputs' / 'localization_results.json', encoding='utf-8'))
+_uses_img = {'recon_diff/VAR': 'hayır', 'diffusion/latent-DDPM': 'hayır',
+             'fpfn/G-VQ': 'evet', 'fpfn/G-VAR': 'evet', 'cascade/Faz4': 'evet'}
+_order = ['recon_diff/VAR', 'diffusion/latent-DDPM', 'fpfn/G-VQ', 'fpfn/G-VAR', 'cascade/Faz4']
+rows = []
+for k in _order:
+    if k not in _loc['results']: continue
+    v = _loc['results'][k]
+    rows.append({'yöntem': k, 'görüntü?': _uses_img.get(k, '?'),
+                 'voxel-AUROC': round(v['auroc_mean'], 3), 'AP': round(v['ap_mean'], 3), 'n': v['n']})
+display(pd.DataFrame(rows))
+print('Görüntüsüz kıyas: difüzyon 0.881 > recon_diff 0.846 — şekil-tabanlı lokalizasyonu iyileştiriyor.')
+print('Görüntü-koşullu cascade 0.980 ile en güçlüsü; difüzyon görüntü EKLEMEZ, görüntüsüz hattı parlatır.')
+
+_ex = PROJECT_ROOT / 'outputs' / 'localization_diffusion_example.png'
+if _ex.exists():
+    img = plt.imread(str(_ex))
+    fig, ax = plt.subplots(figsize=(11, 4)); ax.imshow(img); ax.axis('off')
+    ax.set_title('Ek: recon_diff ↔ latent-difüzyon nitel karşılaştırma', fontsize=11)
+    plt.show()
 """)
 
 # ---------------------------------------------------------------- Özet
