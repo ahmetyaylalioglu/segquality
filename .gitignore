@@ -60,6 +60,9 @@ configs/vae3d_full.yaml
 # Large scratch archives (e.g. aciklama/*.zip) — never commit.
 *.zip
 
+# Third-party reference implementations cloned for study (VAR, SAR3D). Not ours.
+_reference_repos/
+
 # Generated outputs inside the explanatory folder (keep notebooks/scripts, drop artifacts).
 aciklama/outputs/
 

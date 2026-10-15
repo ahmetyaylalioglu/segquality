@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# vae3d_var_gan.yaml — Faz 2: VAR tokenizer + VAR Eq.(5) GAN term.
+# Identical generator (VARVQVAE3D) and data pipeline as vae3d_var.yaml; adds the
+# adversarial lambda_G * L_GAN term via a 3D PatchGAN discriminator. Only the
+# training objective changes, so the model/eval code is reused as-is.
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+# Generator block (same keys as vae3d_var.yaml; read by the same build_model).
+vae3d_var:
+  base_channels: 16
+  num_embeddings: 512
+  embedding_dim: 64
+  input_size: [64, 64, 64]
+  v_patch_nums: [1, 2, 3, 4]
+  using_znorm: false
+  beta: 0.25
+  quant_resi: 0.5
+
+# Discriminator + adversarial-term block (Faz 2 only).
+gan:
+  disc_base_channels: 32     # PatchGAN3D width
+  disc_n_layers: 3           # stride-2 blocks (receptive field = local sub-volume)
+  disc_lr: 0.0002            # discriminator Adam lr (betas 0.5, 0.9)
+  lambda_g: 0.1              # weight of the generator adversarial loss in total G loss
+  gan_start_epoch: 20        # warm up recon+VQ alone first; enable GAN after this epoch
+
+loss:
+  dice_weight: 1.0
+
+train:
+  batch_size: 8
+  num_workers: 2
+  lr: 0.0002
+  epochs: 100
+  seed: 42
+  early_stop_patience: 15
+  min_delta: 0.001
+  recon_preview_every: 5
+  device: "auto"
+  cache_size: 24
+  diag_every: 5
+  diag_k: 20
+  diag_seed: 42
