@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# vae3d_var.yaml — 3D VAR-style (multi-scale residual VQ) tokenizer config.
+# Sibling of vae3d_vq.yaml. The ONLY architectural difference vs vae3d_vq is the
+# quantizer: single-scale VQ -> multi-scale residual VQ (VAR Stage-1 tokenizer).
+# Same encoder/decoder, same data pipeline, same 222/48/47 split, so the QC
+# comparison isolates the quantizer. The GAN term of VAR Eq.(5) is NOT here yet
+# (Faz 2); this trains with the GAN-free recon + VQ objective first.
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+# Dataset-only block (resize target + bbox margin). Same as vae3d_vq.yaml.
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+vae3d_var:
+  base_channels: 16
+  num_embeddings: 512          # shared codebook size (discrete latent vocabulary)
+  embedding_dim: 64            # per-code vector length; also the quantized grid channels
+  input_size: [64, 64, 64]     # must match vae3d.input_size (divisible by 2^4 = 16)
+  v_patch_nums: [1, 2, 3, 4]   # coarse->fine cube sides; last MUST equal bottleneck side (4)
+  using_znorm: false           # false = L2 nearest-code (VQ); true = cosine/unit-norm (SimVQ-like)
+  beta: 0.25                   # commitment weight inside the multi-scale VQ loss
+  quant_resi: 0.5              # Phi residual-correction conv mix ratio (0 -> Identity)
+
+loss:
+  dice_weight: 1.0             # recon = BCE + dice_weight * soft-Dice. No KL (VQ replaces it).
+
+train:
+  batch_size: 8
+  num_workers: 2
+  lr: 0.0002
+  epochs: 100
+  seed: 42
+  early_stop_patience: 15
+  min_delta: 0.001
+  recon_preview_every: 5
+  device: "auto"
+  cache_size: 24
+  diag_every: 5
+  diag_k: 20
+  diag_seed: 42

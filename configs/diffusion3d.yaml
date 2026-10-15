@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# diffusion3d.yaml -- latent DDPM over the frozen VAR tokenizer (diffusion
+# workstream, Part 2, Path A). The DDPM learns a generative prior over the VAR
+# bottleneck's quantized 4^3x64 latent of CLEAN liver masks; at eval it is used
+# AnoDDPM-style to localize injected errors (|broken - decode(denoise(latent))|).
+#
+# Fully additive: the VAR encoder/decoder are loaded FROZEN from var_checkpoint
+# and never updated here. Same 222/48/47 split and data pipeline as vae3d_var.
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+# Dataset-only block (resize target + bbox margin). Same as vae3d_var.yaml so the
+# masks fed to the frozen VAR encoder are identical to what it was trained on.
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+diffusion3d:
+  var_checkpoint: "outputs/checkpoints/vae3d_var_best.pt"  # frozen tokenizer (encode/decode)
+  timesteps: 1000            # DDPM diffusion steps
+  beta_start: 0.0001         # linear noise schedule start
+  beta_end: 0.02             # linear noise schedule end
+  hidden_channels: 128       # denoiser width
+  num_res_blocks: 3          # time-conditioned residual blocks (constant 4^3 resolution)
+  time_dim: 128              # sinusoidal time-embedding / MLP width
+  locate_t: 250              # AnoDDPM partial-noise start used for localization
+
+train:
+  batch_size: 16
+  num_workers: 2
+  lr: 0.0002
+  epochs: 400
+  seed: 42
+  early_stop_patience: 40
+  min_delta: 0.0001
+  preview_every: 25          # decode a few unconditional samples for a sanity preview
+  device: "auto"
+  cache_size: 24

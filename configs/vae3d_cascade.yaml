@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------------------
+# vae3d_cascade.yaml — Faz 4: cascade 2nd VAE (advisor's 2-VAE drawing).
+# Stage-1 = the FROZEN Faz-3 VAR FP/FN model (vae3d_g_var_best.pt); stage-2 = a new
+# VAR refiner that takes [corrected, FP, FN] (3ch, NO image) and predicts the single
+# reference mask. Same data / degradation / split as vae3d_var_fpfn.yaml. Only the
+# stage-2 refiner is trained. The `vae3d_var` block defines BOTH stages' VAR geometry
+# (stage-1 was trained with these exact values); `cascade` points to the stage-1 ckpt.
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+vae3d_var:
+  base_channels: 16
+  num_embeddings: 512
+  embedding_dim: 64
+  input_size: [64, 64, 64]
+  v_patch_nums: [1, 2, 3, 4]
+  using_znorm: false
+  beta: 0.25
+  quant_resi: 0.5
+
+cascade:
+  stage1_checkpoint: "outputs/checkpoints/vae3d_g_var_best.pt"  # frozen Faz-3 FP/FN
+  refiner_in_channels: 3   # [corrected, FP, FN], no image (faithful to the drawing)
+
+loss:
+  dice_weight: 1.0
+
+train:
+  batch_size: 8
+  num_workers: 2
+  lr: 0.0002
+  epochs: 100
+  seed: 42
+  early_stop_patience: 15
+  min_delta: 0.001
+  recon_preview_every: 5
+  device: "auto"
+  cache_size: 24
+  diag_every: 5
+  diag_k: 20
+  diag_seed: 42

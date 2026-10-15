@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------------------
+# vae3d_var_gan_bal.yaml — Faz 2, BALANCED retry.
+# Same generator (VARVQVAE3D) + VAR Eq.(5) GAN term as vae3d_var_gan.yaml, but the
+# discriminator is deliberately WEAKENED to cure the earlier instability (d_loss->0,
+# D overpowering G, recon + QC both degraded). Changes vs vae3d_var_gan.yaml:
+#   disc_base_channels 32 -> 16, disc_n_layers 3 -> 2  (D smaller than G now)
+#   disc_lr 0.0002 -> 0.0001                           (D learns slower)
+#   lambda_g 0.1 -> 0.02                               (weaker adversarial pull)
+# Rationale: let the generator breathe so the GAN refines boundaries instead of
+# collapsing. Separate --tag (vargan_bal) keeps results comparable to the first run.
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+vae3d_var:
+  base_channels: 16
+  num_embeddings: 512
+  embedding_dim: 64
+  input_size: [64, 64, 64]
+  v_patch_nums: [1, 2, 3, 4]
+  using_znorm: false
+  beta: 0.25
+  quant_resi: 0.5
+
+gan:
+  disc_base_channels: 16     # weaker D (was 32) -> D no longer dwarfs the generator
+  disc_n_layers: 2           # shallower D (was 3)
+  disc_lr: 0.0001            # slower D (was 0.0002)
+  lambda_g: 0.02             # weaker adversarial pull (was 0.1)
+  gan_start_epoch: 20        # warm up recon+VQ alone first, then enable GAN
+
+loss:
+  dice_weight: 1.0
+
+train:
+  batch_size: 8
+  num_workers: 2
+  lr: 0.0002
+  epochs: 100
+  seed: 42
+  early_stop_patience: 15
+  min_delta: 0.001
+  recon_preview_every: 5
+  device: "auto"
+  cache_size: 24
+  diag_every: 5
+  diag_k: 20
+  diag_seed: 42
