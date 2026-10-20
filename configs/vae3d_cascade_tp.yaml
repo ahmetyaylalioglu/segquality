@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# vae3d_cascade_tp.yaml — stage-2 of the 2026-10-20 direction: recurrent image-aware
+# TP refiner. Stage-1 = the FROZEN VAR FP/FN/TP model (vae3d_g_var_tp_best.pt); stage-2 =
+# a new VAR refiner taking [image, FP, FN, TP] (image KEPT) and predicting refined
+# [FP, FN, TP], applied recurrently for `iters` passes. Same data / degradation / split
+# as vae3d_var_fpfntp.yaml. Only the stage-2 refiner is trained.
+# Loss = per-map BCE + image-aware MSE (maps x image and x GT, per-map and combined).
+# ---------------------------------------------------------------------------
+
+_base_: "raos.yaml"
+
+data:
+  data_source: "precomputed"
+  volumes_dir: "outputs/volumes"
+
+vae3d:
+  input_size: [64, 64, 64]
+  bbox_margin: 0.10
+
+vae3d_var:
+  base_channels: 16
+  num_embeddings: 512
+  embedding_dim: 64
+  input_size: [64, 64, 64]
+  v_patch_nums: [1, 2, 3, 4]
+  using_znorm: false
+  beta: 0.25
+  quant_resi: 0.5
+
+cascade:
+  stage1_checkpoint: "outputs/checkpoints/vae3d_g_var_tp_best.pt"  # frozen stage-1 FP/FN/TP
+  refiner_in_channels: 4   # [image, FP, FN, TP] (image kept, per the advisor)
+  iters: 3                 # recurrent passes (2nd and 3rd iteration)
+
+loss:
+  bce: 1.0
+  dice: 1.0                 # soft-Dice on reconstructed TP OR FN (directly optimises the tracked metric)
+  # image-aware MSE down-weighted to 0.1: at 1.0 these terms spiked the val loss and
+  # destabilised training; 0.1 keeps the "learn from the grayscale" signal without dominating.
+  mse_per_map_image: 0.1
+  mse_per_map_gt: 0.1
+  mse_combined_image: 0.1
+  mse_combined_gt: 0.1
+
+train:
+  batch_size: 8
+  num_workers: 2
+  lr: 0.0002
+  epochs: 100
+  seed: 42
+  early_stop_patience: 15
+  min_delta: 0.001
+  recon_preview_every: 5
+  device: "auto"
+  cache_size: 24
+  diag_every: 5
+  diag_k: 20
+  diag_seed: 42
